@@ -18,7 +18,6 @@
         android:scrollbars="vertical"
         android:overScrollMode="never"/>
 
-    <!-- Кнопка с улучшенными атрибутами -->
     <Button
         android:id="@+id/deleteDuplicatesButton"
         android:layout_width="match_parent"
