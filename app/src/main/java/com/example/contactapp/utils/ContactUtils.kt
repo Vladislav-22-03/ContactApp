@@ -1,70 +1,82 @@
 package com.example.contactapp.utils
 
+import android.Manifest
+import android.content.ContentProviderOperation
+import android.content.ContentResolver
 import android.content.Context
+import android.content.pm.PackageManager
 import android.provider.ContactsContract
 import android.util.Log
-
+import androidx.annotation.WorkerThread
+import androidx.core.content.ContextCompat
+import java.util.ArrayList
 object ContactUtils {
 
+    @WorkerThread
     fun deleteDuplicateContacts(context: Context): String {
-        val contentResolver = context.contentResolver
-        val contactMap = mutableMapOf<String, MutableList<String>>() // key: "name|phone", value: list of IDs
-
-        val cursor = contentResolver.query(
-            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            arrayOf(
-                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
-                ContactsContract.CommonDataKinds.Phone.NUMBER,
-                ContactsContract.CommonDataKinds.Phone.CONTACT_ID
-            ),
-            null, null, null
-        )
-
-        if (cursor != null && cursor.moveToFirst()) {
-            val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
-            val phoneIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
-            val idIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
-
-            do {
-                val name = cursor.getString(nameIndex) ?: continue
-                val phone = cursor.getString(phoneIndex)?.replace("\\s|-".toRegex(), "") ?: continue
-                val id = cursor.getString(idIndex) ?: continue
-
-                val key = "$name|$phone"
-                if (contactMap.containsKey(key)) {
-                    contactMap[key]?.add(id)
-                } else {
-                    contactMap[key] = mutableListOf(id)
-                }
-            } while (cursor.moveToNext())
-
-            cursor.close()
+        // Проверка разрешения
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CONTACTS)
+            != PackageManager.PERMISSION_GRANTED) {
+            return "Требуется разрешение WRITE_CONTACTS"
         }
 
-        var deletedCount = 0
+        val contentResolver = context.contentResolver
 
-        // Удаляем все дубликаты (оставляем по одному)
-        for ((_, ids) in contactMap) {
-            if (ids.size > 1) {
-                for (i in 1 until ids.size) { // оставляем первый, остальные удаляем
-                    val contactUri = ContactsContract.RawContacts.CONTENT_URI
-                        .buildUpon()
-                        .appendQueryParameter(
-                            ContactsContract.CALLER_IS_SYNCADAPTER,
-                            "true"
-                        ).build()
+        // 1. Получаем контакты с группировкой по дубликатам
+        val duplicates = contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            arrayOf(
+                ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            ),
+            "${ContactsContract.CommonDataKinds.Phone.NUMBER} IS NOT NULL AND ${ContactsContract.CommonDataKinds.Phone.NUMBER} != ''",
+            null,
+            null
+        )?.use { cursor ->
+            val idIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
+            val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+            val phoneIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
 
-                    val rows = contentResolver.delete(
-                        ContactsContract.RawContacts.CONTENT_URI,
-                        ContactsContract.RawContacts.CONTACT_ID + "=?",
-                        arrayOf(ids[i])
-                    )
+            buildMap<String, MutableList<Long>> {
+                while (cursor.moveToNext()) {
+                    val name = cursor.getString(nameIndex) ?: "Unknown"
+                    val phone = cursor.getString(phoneIndex)?.replace("\\D".toRegex(), "") ?: continue
+                    val id = cursor.getLong(idIndex)
 
-                    if (rows > 0) deletedCount++
+                    val key = "$name|$phone"
+                    getOrPut(key) { mutableListOf() }.add(id)
                 }
+            }.filterValues { it.size > 1 }
+        } ?: return "Ошибка чтения контактов"
+
+        if (duplicates.isEmpty()) return "Дубликаты не найдены"
+
+        // 2. Удаление дубликатов
+        var deletedCount = 0
+        val operations = ArrayList<ContentProviderOperation>()
+
+        duplicates.values.forEach { ids ->
+            ids.drop(1).forEach { id ->
+                operations.add(
+                    ContentProviderOperation.newDelete(
+                        ContactsContract.RawContacts.CONTENT_URI.buildUpon()
+                            .appendQueryParameter(ContactsContract.CALLER_IS_SYNCADAPTER, "true")
+                            .build()
+                    )
+                        .withSelection("${ContactsContract.RawContacts.CONTACT_ID} = ?", arrayOf(id.toString()))
+                        .build()
+                )
             }
         }
 
-        return if (deletedCount > 0) "Удалено дубликатов: $deletedCount" else "Дубликаты не найдены"
+        return try {
+            val results = contentResolver.applyBatch(ContactsContract.AUTHORITY, operations)
+            deletedCount = results.count { it.count?.let { cnt -> cnt > 0 } ?: false }
+            "Удалено дубликатов: $deletedCount"
+        } catch (e: Exception) {
+            Log.e("ContactUtils", "Ошибка удаления", e)
+            "Дубликаты найдены, но не удалены (${e.message})"
+        }
     }
 }

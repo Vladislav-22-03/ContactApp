@@ -52,25 +52,37 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getContacts(): List<Contact> {
-        val list = mutableListOf<Contact>()
+        val contacts = mutableListOf<Contact>()
 
         val cursor = contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-            null, null, null, null
+            arrayOf(
+                ContactsContract.CommonDataKinds.Phone._ID, // Добавляем ID
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            ),
+            null, null, null
         )
 
         cursor?.use {
+            val idIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone._ID)
             val nameIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
             val phoneIndex = it.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
 
             while (it.moveToNext()) {
-                val name = it.getString(nameIndex)
-                val phone = it.getString(phoneIndex)
-                list.add(Contact(name ?: "", phone ?: ""))
+                val id = it.getLong(idIndex)
+                val name = it.getString(nameIndex) ?: "Unknown"
+                val phone = it.getString(phoneIndex) ?: ""
+
+                contacts.add(Contact(
+                    id = id,
+                    name = name,
+                    phone = phone
+                ))
             }
         }
 
-        return list
+        return contacts
     }
 
     override fun onRequestPermissionsResult(
